@@ -117,8 +117,14 @@ int playerLane;
 bool playerAlive;
 bool playerHurdling;
 
-int framesSinceAdvance;
-int droppedFrames;
+Uint32 prevFrame_ms;
+Uint32 timeSinceAdvance_ms;
+
+double renderAvgTime_ms;
+double renderAvgDenom;
+const double renderAvg_decay = 0.99;
+
+bool quitRequested;
 
 struct Pattern
 {
@@ -241,7 +247,7 @@ void Restart()
     playerHurdling = false;
     
     // Anything big is fine.
-    framesSinceAdvance = 999;
+    timeSinceAdvance_ms = 1000;
 }
 
 int GetIncomingBandType(int lane, int bandNum)
@@ -273,14 +279,14 @@ void CheckCollision()
 
 void Advance()
 {
-    framesSinceAdvance = 0;
+    timeSinceAdvance_ms = 0;
     ++offset;
     CheckCollision();
     playerHurdling = false;
 }
 
-const int FPS = 60;
-const int FRAME_MS = 1000 / FPS;
+const double ANIM_PER_SEC = 240.0;
+const double ANIM_PER_MS = ANIM_PER_SEC / 1000.0;
 
 void DrawText(const char *s, SDL_Color color, int x, int y, int *textW, int *textH, bool center = false)
 {
@@ -312,13 +318,12 @@ const uint32_t VERY_LIGHT_RED = 0xFF7780FF;
 
 const uint32_t LIGHT_GREEN = 0x1fc116FF;
 
-// Returns true if should quit.
-bool update()
+void update()
 {
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
         if (e.type == SDL_QUIT) {
-            return true;
+            quitRequested = true;
         }
         
         if (e.type == SDL_KEYDOWN) {
@@ -348,21 +353,14 @@ bool update()
             }
         }
     }
-
-    return false;
 }
+
+uint32_t * pixels;
+int pitch;
 
 void render()
 {
-    if (SDL_SetRenderDrawColor(ren, 0, 0, 0, 255) < 0) failSDL("SDL_SetRenderDrawColor");
-    if (SDL_RenderClear(ren) < 0) failSDL("SDL_RenderClear");
-
     // Draw
-    void *pixels;
-    int pitch;
-    if (SDL_LockTexture(canvas.get(), NULL, &pixels, &pitch) < 0) failSDL("SDL_LockTexture canvas");
-    uint32_t *pixels_rgba = static_cast<uint32_t*>(pixels);
-
     for (int y = 0; y < HEIGHT; ++y) {
         for (int x = 0; x < WIDTH; ++x) {
             int lane = laneAt[y][x];
@@ -380,7 +378,6 @@ void render()
                 int bandNum = bandNumAt[y][x];
                 double inBandDist = outerDist - BAND_SIZE * bandNum;
 
-                const int ANIM_SPEED = 4;
                 for (int dband = 0; dband <= 1; ++dband) {
                     int t = GetIncomingBandType(lane, bandNum - dband);
                     if (t != BAND_TYPE_NONE) {
@@ -388,7 +385,7 @@ void render()
                         if (t == BAND_TYPE_HURDLE) bandColor = LIGHT_GREEN;
 
                         int thickness = GetIncomingBandType(lane, bandNum + 1 - dband) == t ? BAND_SIZE : BAND_THICKNESS;
-                        int tween = std::max(BAND_SIZE - ANIM_SPEED * framesSinceAdvance, 0);
+                        int tween = std::max(BAND_SIZE - static_cast<int>(round(ANIM_PER_MS * timeSinceAdvance_ms)), 0);
                         if (inBandDist + dband * BAND_SIZE < thickness + tween && inBandDist + dband * BAND_SIZE >= tween) color = bandColor;
                     }
                 }
@@ -398,10 +395,11 @@ void render()
                 }
             }
 
-            pixels_rgba[y*WIDTH + x] = color;
+            pixels[y*WIDTH + x] = color;
         }
     }
-    SDL_UnlockTexture(canvas.get());
+
+    SDL_UpdateTexture(canvas.get(), NULL, pixels, pitch);
 
     if (SDL_RenderCopy(ren, canvas.get(), NULL, NULL) < 0) failSDL("SDL_RenderCopy canvas");
 
@@ -409,9 +407,11 @@ void render()
         DrawText("YOU DIED", { 255, 255, 255, 255 }, WIDTH / 2, HEIGHT / 2, NULL, NULL, true);
     }
 
-    char buf[256];
-    snprintf(buf, sizeof(buf), "Dropped frames: %d", droppedFrames);
-    DrawText(buf, { 255, 255, 255, 255 }, 0, 0, NULL, NULL);
+    if (renderAvgDenom > 0) {
+        char buf[256];
+        snprintf(buf, sizeof(buf), "Render avg: %.2lf ms", renderAvgTime_ms / renderAvgDenom);
+        DrawText(buf, { 255, 255, 255, 255 }, 0, 0, NULL, NULL);
+    }
 
     SDL_RenderPresent(ren);
 }
@@ -419,8 +419,19 @@ void render()
 void main_loop()
 {
     update();
-    ++framesSinceAdvance;
+
+    // Delta time for animation
+    Uint32 now_ms = SDL_GetTicks();
+    timeSinceAdvance_ms += now_ms - prevFrame_ms;
+    prevFrame_ms = now_ms;
+
+    // Render
+    Uint32 start_ms = SDL_GetTicks();
     render();
+    Uint32 end_ms = SDL_GetTicks();
+
+    renderAvgTime_ms = renderAvg_decay * renderAvgTime_ms + (1-renderAvg_decay) * (end_ms - start_ms);
+    renderAvgDenom = renderAvg_decay * renderAvgDenom + (1-renderAvg_decay);
 }
 
 int main(int argc, char *argv[])
@@ -445,43 +456,27 @@ int main(int argc, char *argv[])
     ren = SDL_CreateRenderer(win, -1, 0);
     if (!ren) failSDL("SDL_CreateRenderer");
 
-    canvas.reset(SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_STREAMING, WIDTH, HEIGHT));
+    auto format = SDL_PIXELFORMAT_RGBA8888;
+    canvas.reset(SDL_CreateTexture(ren, format, SDL_TEXTUREACCESS_STREAMING, WIDTH, HEIGHT));
     if (!canvas) failSDL("SDL_CreateTexture canvas");
 
+    pixels = new uint32_t[HEIGHT * WIDTH];
+    pitch = SDL_BYTESPERPIXEL(format) * WIDTH;
+
     Restart();
+
+    prevFrame_ms = SDL_GetTicks();
+
+    renderAvgTime_ms = 0;
+    renderAvgDenom = 0;
+
+    quitRequested = false;
 
 #ifdef __EMSCRIPTEN__
     emscripten_set_main_loop(main_loop, 0, 0);
 #else
-    Uint32 nextFrame_ms = SDL_GetTicks();
-    droppedFrames = 0;
-
-    bool quit = false;
-    const int DELAY_GRANULARITY = 10;
-    while (!quit) {
-        if (update()) quit = true;
-
-        // Check if we need to do a render
-        Uint32 now_ms = SDL_GetTicks();
-        if (!SDL_TICKS_PASSED(now_ms, nextFrame_ms)) {
-            // To go easy on the CPU, sleep if we have lots of time.
-            if (nextFrame_ms >= now_ms + DELAY_GRANULARITY) {
-                SDL_Delay(1);
-            }
-            continue;
-        }
-        ++framesSinceAdvance;
-
-        // If we've also passed the time to draw the _next_ frame after this one,
-        // we're falling behind, so skip this frame.
-        nextFrame_ms += FRAME_MS;
-        if (SDL_TICKS_PASSED(now_ms, nextFrame_ms)) {
-            printf("Dropped frame\n");
-            ++droppedFrames;
-            continue;
-        }
-
-        render();
+    while (!quitRequested) {
+        main_loop();
     }
 #endif
 

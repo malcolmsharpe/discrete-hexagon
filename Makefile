@@ -4,5 +4,7 @@ discrete-hexagon: main.cpp
 discrete-hexagon.html: main.cpp
 	emcc -O main.cpp -std=c++11 -s USE_SDL=2 -s USE_SDL_IMAGE=2 -s USE_SDL_TTF=2 -s SDL2_IMAGE_FORMATS='["png"]' -o discrete-hexagon.html --preload-file data
 
+all: discrete-hexagon discrete-hexagon.html
+
 clean:
 	rm -f discrete-hexagon discrete-hexagon.html

@@ -4,20 +4,13 @@ Concept:
 	A variant of Super Hexagon using the Necrodancer move mechanic.
 
 How to run:
+        Run "./discrete-hexagon".
 
-        Native:
-            Run "./discrete-hexagon"
-
-            Might require the SDL2 dylibs to be placed in /usr/local/lib (or another dylib directory)--
-            or install the required SDL2 libraries:
-                brew install sdl2
-                brew install sdl2_image
-                brew install sdl2_ttf
-        
-        Emscripten:
-            Run "python -m http.server"
-            Open localhost:8000/discrete-hexagon.html in a browser.
-
+        Might require the SDL2 dylibs to be placed in /usr/local/lib (or another dylib directory)--
+        or install the required SDL2 libraries:
+            brew install sdl2
+            brew install sdl2_image
+            brew install sdl2_ttf
 
 How to play:
 	NOTE: There is no music provided, so use your own once you learn the controls.
